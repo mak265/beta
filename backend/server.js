@@ -62,5 +62,5 @@ try {
   if (!process.env.MONGODB_URI) throw new Error('MONGODB_URI is required')
   await mongoose.connect(process.env.MONGODB_URI)
   await BetaSignup.init()
-  app.listen(port, () => console.log(`AURA Beta API listening on ${port}`))
+  app.listen(port, '127.0.0.1', () => console.log(`AURA Beta API listening on ${port}`))
 } catch (err) { console.error('Startup failed:', err); process.exit(1) }
