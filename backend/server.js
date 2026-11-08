@@ -57,7 +57,6 @@ const requireAdmin = (req, res, next) => {
     }
   }
 
-  res.set('WWW-Authenticate', 'Basic realm="AURA Admin", charset="UTF-8"')
   return res.status(401).json({ message: 'Invalid admin username or password.' })
 }
 app.post('/api/beta/register', limiter, async (req, res) => {
