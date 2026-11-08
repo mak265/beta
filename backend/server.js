@@ -3,6 +3,7 @@ import express from 'express'
 import mongoose from 'mongoose'
 import helmet from 'helmet'
 import cors from 'cors'
+import { createHash, timingSafeEqual } from 'node:crypto'
 import { rateLimit } from 'express-rate-limit'
 
 const app = express()
@@ -33,6 +34,32 @@ const religions = new Set(['Any religion', 'Catholic', 'Iglesia Ni Cristo', 'Oth
 const goals = new Set(['Serious relationship', 'Casual dating', 'Friendship first'])
 const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const limiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 10, standardHeaders: 'draft-7', legacyHeaders: false })
+const adminLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 30, standardHeaders: 'draft-7', legacyHeaders: false })
+const hashCredential = value => createHash('sha256').update(value).digest()
+const sameCredential = (provided, expected) => timingSafeEqual(hashCredential(provided), hashCredential(expected))
+const requireAdmin = (req, res, next) => {
+  res.set('Cache-Control', 'no-store')
+  const expectedUsername = process.env.ADMIN_USERNAME
+  const expectedPassword = process.env.ADMIN_PASSWORD
+  if (!expectedUsername || !expectedPassword) {
+    return res.status(503).json({ message: 'Admin access is not configured on the server.' })
+  }
+
+  const authorization = req.get('authorization') || ''
+  const match = /^Basic ([A-Za-z0-9+/]+={0,2})$/.exec(authorization)
+  if (match) {
+    const decoded = Buffer.from(match[1], 'base64').toString('utf8')
+    const separator = decoded.indexOf(':')
+    if (separator >= 0 &&
+        sameCredential(decoded.slice(0, separator), expectedUsername) &&
+        sameCredential(decoded.slice(separator + 1), expectedPassword)) {
+      return next()
+    }
+  }
+
+  res.set('WWW-Authenticate', 'Basic realm="AURA Admin", charset="UTF-8"')
+  return res.status(401).json({ message: 'Invalid admin username or password.' })
+}
 app.post('/api/beta/register', limiter, async (req, res) => {
   const b = req.body || {}
   const name = typeof b.name === 'string' ? b.name.trim() : ''
@@ -54,6 +81,33 @@ app.post('/api/beta/register', limiter, async (req, res) => {
     if (error.code === 11000) return res.status(409).json({ message: 'This email is already on the waitlist.' })
     console.error('Registration error:', error)
     return res.status(500).json({ message: 'Unable to register right now.' })
+  }
+})
+app.get('/api/admin/signups', adminLimiter, requireAdmin, async (req, res) => {
+  const page = Number(req.query.page || 1)
+  const pageSize = Number(req.query.pageSize || 50)
+  const search = typeof req.query.search === 'string' ? req.query.search.trim().slice(0, 100) : ''
+  if (!Number.isInteger(page) || page < 1 || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100) {
+    return res.status(400).json({ message: 'Invalid pagination values.' })
+  }
+
+  const filter = search
+    ? { $or: ['name', 'email'].map(field => ({ [field]: new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') })) }
+    : {}
+  try {
+    const [total, signups] = await Promise.all([
+      BetaSignup.countDocuments(filter),
+      BetaSignup.find(filter)
+        .select('name email religionPreference preferredAgeMin preferredAgeMax relationshipGoal adultConfirmed emailConsent sensitivePreferenceConsent status premiumRewardMonths premiumRewardStatus createdAt')
+        .sort({ createdAt: -1 })
+        .skip((page - 1) * pageSize)
+        .limit(pageSize)
+        .lean()
+    ])
+    return res.json({ total, page, pageSize, signups })
+  } catch (error) {
+    console.error('Admin signup query error:', error)
+    return res.status(500).json({ message: 'Unable to load signups right now.' })
   }
 })
 app.get('/api/health', (_req, res) => res.json({ ok: true }))
